@@ -80,6 +80,8 @@ def filter_products(products):
     logger.debug(f"Filtrando {len(products)} productos")
     
     filtered = []
+    codigos_vistos = set()  # Para evitar duplicados
+    
     for product in products:
         # Verificar que esté en una de las bodegas permitidas
         bodega_texto = get_bodega_texto(product["BODEGA"])
@@ -91,16 +93,19 @@ def filter_products(products):
             product["ESTADO"].upper() in ["A", "AA", "NU", "B", "C"] and
             product["Precio"] != 0):
             
-            filtered.append({
-                "codigo": product["CODIGO"],
-                "precio": product["Precio"],
-                "color": product["COLOR"],
-                "estado": get_estado_texto(product["ESTADO"]),
-                "nombre": product["NOMBRE"],
-                "bodega": bodega_texto
-            })
+            # Verificar que no sea un duplicado por código
+            if product["CODIGO"] not in codigos_vistos:
+                codigos_vistos.add(product["CODIGO"])
+                filtered.append({
+                    "codigo": product["CODIGO"],
+                    "precio": product["Precio"],
+                    "color": product["COLOR"],
+                    "estado": get_estado_texto(product["ESTADO"]),
+                    "nombre": product["NOMBRE"],
+                    "bodega": bodega_texto
+                })
     
-    logger.debug(f"Productos filtrados: {len(filtered)}")
+    logger.debug(f"Productos filtrados (sin duplicados): {len(filtered)}")
     return filtered
 
 def buscar_urls_micelu(nombre_producto):
@@ -253,7 +258,9 @@ def home():
         "endpoints": {
             "productos_disponibles": "/productos/disponibles",
             "buscar_productos": "/productos/buscar/<query>",
-            "buscar_urls": "/productos/urls/<query>"
+            "buscar_urls": "/productos/urls/<query>",
+            "debug_productos": "/debug/productos",
+            "debug_micelu": "/debug/micelu/<query>"
         }
     })
 
@@ -281,11 +288,28 @@ def search_products(query):
     filtered_products = filter_products(products)
     logger.debug(f"Productos después del primer filtro: {len(filtered_products)}")
     
-    # Search in filtered products
-    search_results = [
-        product for product in filtered_products
-        if query.lower() in product["nombre"].lower()
-    ]
+    # Búsqueda MUY específica
+    query_lower = query.lower().strip()
+    search_results = []
+    
+    for product in filtered_products:
+        nombre_lower = product["nombre"].lower()
+        
+        # Búsqueda exacta: todas las palabras deben estar en el nombre
+        palabras_busqueda = [palabra for palabra in query_lower.split() if len(palabra) > 1]  # Ignorar palabras de 1 letra
+        
+        if len(palabras_busqueda) == 0:
+            continue
+            
+        # Todas las palabras deben estar en el nombre
+        todas_palabras_encontradas = all(palabra in nombre_lower for palabra in palabras_busqueda)
+        
+        if todas_palabras_encontradas:
+            search_results.append(product)
+    
+    # Limitar a máximo 10 resultados
+    search_results = search_results[:10]
+    
     logger.debug(f"Productos encontrados con la búsqueda: {len(search_results)}")
     
     return jsonify({
@@ -366,18 +390,75 @@ def debug_micelu(query):
             "query": query
         })
 
+@app.route('/debug/productos', methods=['GET'])
+def debug_productos():
+    """Endpoint de debug para ver qué está pasando con los productos"""
+    try:
+        logger.debug("Debug de productos")
+        
+        # Obtener productos crudos
+        products_raw = get_products()
+        logger.debug(f"Productos crudos obtenidos: {len(products_raw)}")
+        
+        # Contar duplicados por código
+        codigos = [p["CODIGO"] for p in products_raw]
+        codigos_unicos = set(codigos)
+        duplicados = len(codigos) - len(codigos_unicos)
+        
+        # Contar productos por nombre (para ver si hay muchos con el mismo nombre)
+        nombres = [p["NOMBRE"] for p in products_raw]
+        from collections import Counter
+        contador_nombres = Counter(nombres)
+        nombres_mas_comunes = contador_nombres.most_common(10)
+        
+        # Filtrar productos
+        filtered_products = filter_products(products_raw)
+        
+        return jsonify({
+            "status": "debug",
+            "productos_crudos": len(products_raw),
+            "codigos_unicos": len(codigos_unicos),
+            "duplicados_por_codigo": duplicados,
+            "productos_filtrados": len(filtered_products),
+            "nombres_mas_comunes": nombres_mas_comunes,
+            "ejemplo_productos": products_raw[:3] if products_raw else []
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "error": str(e)
+        })
+
 @app.route('/productos/completo/<string:query>', methods=['GET'])
 def search_products_complete(query):
     """Buscar productos en API + URLs en web (todo en uno)"""
     logger.debug(f"Búsqueda completa para: {query}")
     
-    # 1. Buscar en API interna
+    # 1. Buscar en API interna con búsqueda MUY específica
     products = get_products()
     filtered_products = filter_products(products)
-    search_results = [
-        product for product in filtered_products
-        if query.lower() in product["nombre"].lower()
-    ]
+    
+    query_lower = query.lower().strip()
+    search_results = []
+    
+    for product in filtered_products:
+        nombre_lower = product["nombre"].lower()
+        
+        # Búsqueda exacta: todas las palabras deben estar en el nombre
+        palabras_busqueda = [palabra for palabra in query_lower.split() if len(palabra) > 1]  # Ignorar palabras de 1 letra
+        
+        if len(palabras_busqueda) == 0:
+            continue
+            
+        # Todas las palabras deben estar en el nombre
+        todas_palabras_encontradas = all(palabra in nombre_lower for palabra in palabras_busqueda)
+        
+        if todas_palabras_encontradas:
+            search_results.append(product)
+    
+    # Limitar a máximo 10 resultados
+    search_results = search_results[:10]
     
     # 2. Buscar URLs en micelu.co
     urls_data = buscar_urls_micelu(query)
