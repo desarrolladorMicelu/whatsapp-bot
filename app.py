@@ -112,23 +112,39 @@ def buscar_urls_micelu(nombre_producto):
         search_query = quote_plus(nombre_producto)
         search_url = f"https://micelu.co/?s={search_query}&e_search_props=51a8e97-78"
         
+        logger.debug(f"URL de búsqueda: {search_url}")
+        
         # Hacer petición a micelu.co
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+            'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Cache-Control': 'max-age=0'
         }
         
-        response = requests.get(search_url, headers=headers, timeout=10)
+        response = requests.get(search_url, headers=headers, timeout=20)
         response.raise_for_status()
+        
+        logger.debug(f"Status code: {response.status_code}")
+        logger.debug(f"Content length: {len(response.text)}")
         
         # Parsear HTML
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # Buscar enlaces de productos (ajustar selectores según la estructura real)
+        # Buscar enlaces de productos específicos
         productos_encontrados = []
         
-        # Buscar enlaces que contengan "/producto/" en el href
+        # Estrategia 1: Buscar enlaces que contengan "/producto/" en el href
         enlaces_productos = soup.find_all('a', href=lambda href: href and '/producto/' in href)
+        logger.debug(f"Enlaces con '/producto/' encontrados: {len(enlaces_productos)}")
         
+        # Procesar solo enlaces de productos específicos
         for enlace in enlaces_productos:
             href = enlace.get('href')
             
@@ -152,12 +168,65 @@ def buscar_urls_micelu(nombre_producto):
             elif enlace.get('title'):
                 titulo = enlace.get('title').strip()
             
-            # Solo agregar si tiene título y no es duplicado
+            # Solo agregar si tiene título, no es duplicado y coincide con la búsqueda
             if titulo and url_completa not in [p['url'] for p in productos_encontrados]:
-                productos_encontrados.append({
-                    'titulo': titulo,
-                    'url': url_completa
-                })
+                # Verificar que el título coincida con la búsqueda
+                nombre_busqueda = nombre_producto.lower()
+                titulo_lower = titulo.lower()
+                
+                # Buscar coincidencias específicas
+                palabras_busqueda = nombre_busqueda.split()
+                coincidencias = sum(1 for palabra in palabras_busqueda if palabra in titulo_lower)
+                
+                # Si al menos 2 palabras coinciden, agregar el producto
+                if coincidencias >= 2:
+                    productos_encontrados.append({
+                        'titulo': titulo,
+                        'url': url_completa
+                    })
+                    logger.debug(f"Producto encontrado: {titulo} - {url_completa}")
+        
+        # Si no encontramos nada específico, buscar en elementos con precios
+        if not productos_encontrados:
+            logger.debug("Buscando en elementos con precios...")
+            
+            # Buscar elementos que contengan precios
+            elementos_precio = soup.find_all(string=lambda text: text and '$' in text)
+            
+            for elemento_precio in elementos_precio:
+                elemento_padre = elemento_precio.parent
+                for _ in range(3):  # Buscar hasta 3 niveles arriba
+                    if elemento_padre:
+                        enlace_padre = elemento_padre.find('a', href=True)
+                        if enlace_padre:
+                            href = enlace_padre.get('href')
+                            if href.startswith('/'):
+                                url_completa = f"https://micelu.co{href}"
+                            elif not href.startswith('http'):
+                                url_completa = f"https://micelu.co/{href}"
+                            else:
+                                url_completa = href
+                            
+                            titulo = enlace_padre.get_text().strip()
+                            
+                            # Verificar que coincida con la búsqueda
+                            if titulo and url_completa not in [p['url'] for p in productos_encontrados]:
+                                nombre_busqueda = nombre_producto.lower()
+                                titulo_lower = titulo.lower()
+                                palabras_busqueda = nombre_busqueda.split()
+                                coincidencias = sum(1 for palabra in palabras_busqueda if palabra in titulo_lower)
+                                
+                                if coincidencias >= 2:
+                                    productos_encontrados.append({
+                                        'titulo': titulo,
+                                        'url': url_completa
+                                    })
+                                    logger.debug(f"Producto por precio encontrado: {titulo} - {url_completa}")
+                            break
+                    elemento_padre = elemento_padre.parent if elemento_padre else None
+        
+        # Limitar a máximo 5 productos
+        productos_encontrados = productos_encontrados[:5]
         
         logger.debug(f"URLs encontradas: {len(productos_encontrados)}")
         
@@ -241,6 +310,61 @@ def search_product_urls(query):
         "url_busqueda_general": urls_data['url_busqueda'],
         "error": urls_data.get('error', None)
     })
+
+@app.route('/debug/micelu/<string:query>', methods=['GET'])
+def debug_micelu(query):
+    """Endpoint de debug para ver qué está pasando con micelu.co"""
+    try:
+        logger.debug(f"Debug para: {query}")
+        
+        # Construir URL de búsqueda
+        search_query = quote_plus(query)
+        search_url = f"https://micelu.co/?s={search_query}&e_search_props=51a8e97-78"
+        
+        # Hacer petición
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        
+        response = requests.get(search_url, headers=headers, timeout=15)
+        
+        # Parsear HTML
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Analizar la estructura
+        todos_enlaces = soup.find_all('a', href=True)
+        enlaces_producto = soup.find_all('a', href=lambda href: href and '/producto/' in href)
+        
+        # Buscar cualquier enlace que contenga palabras clave
+        enlaces_relevantes = []
+        for enlace in todos_enlaces[:50]:  # Primeros 50
+            href = enlace.get('href', '')
+            texto = enlace.get_text().strip()
+            if any(keyword in href.lower() or keyword in texto.lower() for keyword in ['iphone', 'samsung', 'celular', 'telefono', 'producto']):
+                enlaces_relevantes.append({
+                    'href': href,
+                    'texto': texto,
+                    'title': enlace.get('title', '')
+                })
+        
+        return jsonify({
+            "status": "debug",
+            "query": query,
+            "url_busqueda": search_url,
+            "status_code": response.status_code,
+            "content_length": len(response.text),
+            "total_enlaces": len(todos_enlaces),
+            "enlaces_producto": len(enlaces_producto),
+            "enlaces_relevantes": enlaces_relevantes[:10],  # Solo primeros 10
+            "html_sample": response.text[:1000]  # Primeros 1000 caracteres del HTML
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "error": str(e),
+            "query": query
+        })
 
 @app.route('/productos/completo/<string:query>', methods=['GET'])
 def search_products_complete(query):
